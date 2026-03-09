@@ -38,7 +38,8 @@ async def run() -> None:
     scheduler.start()
 
     bot, dp = build_dispatcher(settings, repo, runtime_repo, rubrics, scheduler, ai_client, publisher)
-    await dp.start_polling(bot)
+    await bot.delete_webhook(drop_pending_updates=False)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
 if __name__ == "__main__":

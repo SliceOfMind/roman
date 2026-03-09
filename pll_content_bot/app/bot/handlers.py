@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.db.models import ContentStatus
 from app.bot.publisher import TelegramPublisher
+from app.db.models import ContentStatus
 from app.db.queries import ContentRepository, RuntimeSettingsRepository
 from app.rubrics.base_rubric import BaseRubric
 from app.services.dataset_loader import load_csv_rows
 from app.services.openai_client import OpenAIClient
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 class ModerationHandlers:
@@ -68,10 +71,33 @@ class ModerationHandlers:
         target_router.callback_query.register(self.regenerate, F.data.startswith("regen:"))
         target_router.callback_query.register(self.skip, F.data.startswith("skip:"))
 
+    def _log_message(self, message: Message) -> None:
+        user = message.from_user
+        chat_id = message.chat.id if message.chat else None
+        user_id = user.id if user else None
+        username = user.username if user else None
+        text = (message.text or "").replace("\n", " ")
+        if len(text) > 300:
+            text = text[:300] + "..."
+        logger.info("incoming_message chat_id=%s user_id=%s username=%s text=%r", chat_id, user_id, username, text)
+        if text.startswith("/"):
+            cmd = text.split()[0]
+            logger.info("incoming_command chat_id=%s user_id=%s command=%s", chat_id, user_id, cmd)
+
     def _is_admin(self, message: Message) -> bool:
         return bool(message.chat and message.chat.id == self.admin_chat_id)
 
     async def _deny(self, message: Message) -> None:
+        chat_id = message.chat.id if message.chat else None
+        user_id = message.from_user.id if message.from_user else None
+        cmd = (message.text or "").split()[0] if message.text else ""
+        logger.warning(
+            "admin_command_rejected chat_id=%s user_id=%s command=%s expected_admin_chat_id=%s",
+            chat_id,
+            user_id,
+            cmd,
+            self.admin_chat_id,
+        )
         await message.answer("Доступ запрещен.")
 
     async def _admin_guard(self, message: Message) -> bool:
@@ -84,9 +110,11 @@ class ModerationHandlers:
         return self.runtime_repo.get_bool("auto_publish", default=False)
 
     async def start(self, message: Message) -> None:
-        await message.answer("Private Law Library bot запущен.")
+        self._log_message(message)
+        await message.answer("Бот Private Law Library запущен и работает.")
 
     async def help_admin(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         await message.answer(
@@ -109,6 +137,7 @@ class ModerationHandlers:
         )
 
     async def status(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         roman_rows = load_csv_rows(self.roman_dataset_path)
@@ -130,6 +159,7 @@ class ModerationHandlers:
         )
 
     async def health(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         checks: list[str] = ["• Bot: OK"]
@@ -163,6 +193,7 @@ class ModerationHandlers:
         await message.answer("Health check:\n" + "\n".join(checks) + f"\n\n{summary}")
 
     async def stats(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         roman_published = self.repo.count_content("roman_law_today", ContentStatus.PUBLISHED.value)
@@ -182,18 +213,21 @@ class ModerationHandlers:
         )
 
     async def test_roman(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         source_item_id, text = self.rubrics["roman_law_today"].load_next_item()
         await message.answer(f"Тестовый черновик Roman ({source_item_id}):\n\n{text}")
 
     async def test_argument(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         source_item_id, text = self.rubrics["argument_of_the_day"].load_next_item()
         await message.answer(f"Тестовый черновик Argument ({source_item_id}):\n\n{text}")
 
     async def publish_roman(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         source_item_id, text = self.rubrics["roman_law_today"].load_next_item()
@@ -203,6 +237,7 @@ class ModerationHandlers:
         await message.answer(f"Roman item обработан (ID записи: {content_id}).")
 
     async def publish_argument(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         source_item_id, text = self.rubrics["argument_of_the_day"].load_next_item()
@@ -212,6 +247,7 @@ class ModerationHandlers:
         await message.answer(f"Argument item обработан (ID записи: {content_id}).")
 
     async def next_roman(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         source_item_id, latin_short = self.rubrics["roman_law_today"].peek_next_item()
@@ -223,6 +259,7 @@ class ModerationHandlers:
         )
 
     async def next_argument(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         source_item_id, topic = self.rubrics["argument_of_the_day"].peek_next_item()
@@ -233,6 +270,7 @@ class ModerationHandlers:
         )
 
     async def skip_roman(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         source_item_id, _ = self.rubrics["roman_law_today"].peek_next_item()
@@ -240,6 +278,7 @@ class ModerationHandlers:
         await message.answer(f"Roman item {source_item_id} отмечен как пропущенный.")
 
     async def skip_argument(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         source_item_id, _ = self.rubrics["argument_of_the_day"].peek_next_item()
@@ -247,18 +286,21 @@ class ModerationHandlers:
         await message.answer(f"Argument item {source_item_id} отмечен как пропущенный.")
 
     async def autopublish_on(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         self.runtime_repo.set_bool("auto_publish", True)
         await message.answer("Автопубликация включена (runtime setting).")
 
     async def autopublish_off(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         self.runtime_repo.set_bool("auto_publish", False)
         await message.answer("Автопубликация выключена (runtime setting).")
 
     async def scheduler_status(self, message: Message) -> None:
+        self._log_message(message)
         if not await self._admin_guard(message):
             return
         jobs = self.scheduler.get_jobs()
